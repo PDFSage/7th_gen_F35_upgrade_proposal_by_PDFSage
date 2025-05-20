@@ -1,3 +1,7 @@
+Ensure all simulation code work correctly with all dataclasses and states, in this fully modular yet fully failsafe way:  Ensure  as much as possible the initial states for all agents properly works in its __init__ or in a base entity class and that everything works for real even if none of this type of agent is included in this simulation, for all types of simulations: 
+
+
+
 Thanks for the detail. I’ll research the full range of subsystems relevant to a 7th-generation CAD-optimized upgrade to the F-35, including avionics, radar, engine integration, and other components. I’ll also look into real-world CAD and Python simulation support for manufacturing small parts and simulating wind tunnel performance, with an emphasis on full failsafe modular design.
 
 I’ll let you know once I’ve gathered the relevant data and technical components for Pythonic implementation.
