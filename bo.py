@@ -1,11 +1,12 @@
 #!/usr/bin/env python
-# Minimal comments per user request
+# minimal comments
+import sys, math, random, argparse, os, datetime, time, re, logging, ssl, urllib.request, base64, io, warnings, dataclasses, copy
 from datetime import timezone
+from typing import List, Optional, Dict, Any, get_origin, get_args, Union
 
-# Optional imports with safe fall-backs
 try:
     import requests
-except ImportError:  # requests stub
+except ImportError:
     class _RequestsStub:
         def __getattr__(self, _): raise RuntimeError("requests library not available")
     requests = _RequestsStub()
@@ -13,7 +14,7 @@ except ImportError:  # requests stub
 try:
     from PIL import Image, ImageFile
     ImageFile.LOAD_TRUNCATED_IMAGES = True
-except ImportError:  # PIL stub
+except ImportError:
     class _PILStub:
         def __getattr__(self, _): raise RuntimeError("PIL not available")
     Image = _PILStub()
@@ -22,12 +23,11 @@ except ImportError:  # PIL stub
 
 try:
     from numpy import array
-except ImportError:  # numpy stub
+except ImportError:
     def array(x, *_, **__): return x
 
 from enum import Enum, auto
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, get_origin, get_args
 
 try:
     import psutil
@@ -37,8 +37,12 @@ try:
     import GPUtil
 except ImportError:
     GPUtil = None
+else:
+    if not hasattr(GPUtil, "getGPUs"):
+        class _GPUtilStub:
+            def __getattr__(self, _): raise RuntimeError("GPUtil incomplete")
+        GPUtil = _GPUtilStub()
 
-# OpenGL safe import / stubs
 try:
     from OpenGL.GL import (
         glGenTextures, glBindTexture, glTexImage2D, glTexParameterf, glEnable, glDisable,
@@ -110,7 +114,7 @@ GOOGLE_MAP_URL = ''
 EARTH_TEXTURE = 'earth.jpg'
 EARTH_URLS = []
 
-def ensure_texture(_tex, _url): return False  # external source disabled
+def ensure_texture(_tex, _url): return False
 
 def _ensure_defaults(obj):
     if obj is None: return
@@ -120,21 +124,25 @@ def _ensure_defaults(obj):
             if v is None:
                 if f.default is not dataclasses.MISSING:
                     setattr(obj, f.name, copy.deepcopy(f.default))
-                elif f.default_factory is not dataclasses.MISSING:
-                    setattr(obj, f.name, f.default_factory())
+                elif f.default_factory is not dataclasses.MISSING:  # type: ignore
+                    setattr(obj, f.name, f.default_factory())       # type: ignore
                 else:
                     t = f.type
-                    if get_origin(t) is Optional: t = get_args(t)[0]
-                    if dataclasses.is_dataclass(t): setattr(obj, f.name, t())
-                    elif t is float: setattr(obj, f.name, 0.0)
-                    elif t is int: setattr(obj, f.name, 0)
-                    elif t is bool: setattr(obj, f.name, False)
-                    elif t is str: setattr(obj, f.name, "")
-                    elif t in (list, dict): setattr(obj, f.name, t())
-                    else: setattr(obj, f.name, None)
+                    origin = get_origin(t) or t
+                    if dataclasses.is_dataclass(origin):
+                        setattr(obj, f.name, origin())
+                    elif origin is Union:
+                        u_args = [a for a in get_args(t) if dataclasses.is_dataclass(a)]
+                        setattr(obj, f.name, u_args[0]() if u_args else None)
+                    elif origin in (float, int, bool, str):
+                        setattr(obj, f.name, origin())
+                    elif origin in (list, dict, set, tuple):
+                        setattr(obj, f.name, origin())
+                    else:
+                        setattr(obj, f.name, None)
                 v = getattr(obj, f.name)
             _ensure_defaults(v)
-    elif isinstance(obj, list):
+    elif isinstance(obj, (list, tuple, set)):
         for item in obj: _ensure_defaults(item)
     elif isinstance(obj, dict):
         for item in obj.values(): _ensure_defaults(item)
@@ -274,6 +282,7 @@ class EntityState(_InitMixin):
                 attr = getattr(self, k)
                 if dataclasses.is_dataclass(attr): attr.initialize(v, snn)
                 else: setattr(self, k, snn.map(k, v))
+        _ensure_defaults(self)
     def _step_generic(self, parent, dt):
         if self.flight.destroyed: return
         accel = getattr(parent, 'pilot_input', PilotInput()).throttle * 30.0 - self.flight.throttle * 10.0
@@ -282,7 +291,8 @@ class EntityState(_InitMixin):
         dist = self.flight.speed * dt
         hdg = self.orientation.psi
         dlat = (dist / 111320.0) * math.cos(hdg)
-        dlon = (dist / (111320.0 * max(0.01, math.cos(math.radians(self.geospatial.lat))))) * math.sin(hdg)
+        denom = 111320.0 * max(1e-3, math.cos(math.radians(self.geospatial.lat)))
+        dlon = (dist / denom) * math.sin(hdg)
         self.geospatial.lat += dlat
         self.geospatial.lon += dlon
         climb = getattr(parent, "climb_rate", 0.0)
@@ -327,6 +337,7 @@ class UniversalBo(_InitMixin):
         return self.entities.get(name)
     def validate_required_fields(self):
         for e in self.entities.values(): _ensure_defaults(e)
+        _ensure_defaults(self.simulation)
 
 UNIVERSE = UniversalBo()
 
@@ -409,6 +420,8 @@ class BaseAgent:
         if not hasattr(self, 'pilot_input'): self.pilot_input = PilotInput()
         for attr, default in BaseAgent.DEFAULT_ATTRS_SIMPLE.items():
             if not hasattr(self, attr): setattr(self, attr, default)
+        self._failsafe_init()
+    def _failsafe_init(self):
         _ensure_defaults(self)
         _ensure_defaults(self.state)
 
@@ -463,6 +476,7 @@ class Aircraft(BaseAgent):
         self.v2 = self.liftoff_speed * 0.9
         self.v1_time: Optional[float] = None
         self.v2_time: Optional[float] = None
+        _ensure_defaults(self.state)
     def step(self, dt): self.state.step_aircraft(self, dt)
     def load_missiles(self, count, missile_type=None):
         self.missiles = []
@@ -491,6 +505,7 @@ class TeslaCar(Car):
         self.route = route
         self.coverage = True
         self.speed = 30.0 / 3.6
+        _ensure_defaults(self.state)
 
 class F35(Fighter): pass
 class F22(Fighter): pass
@@ -510,6 +525,7 @@ class OrbitalAsset(Aircraft):
         self.orbit_period = 92 * 60
         self.phase = random.random() * 2 * math.pi
         self.state.flight.on_ground = False
+        _ensure_defaults(self.state)
     def step(self, dt): self.state.step_orbit(self, dt)
 
 class ISS(OrbitalAsset):
@@ -524,6 +540,7 @@ class LaunchVehicle(Aircraft):
         super().__init__(callsign, 'SPACE')
         self.launch_phase = 0
         self.state.geospatial.alt_m = 0.0
+        _ensure_defaults(self.state)
     def step(self, dt): self.state.step_launch(self, dt)
 
 class Falcon9(LaunchVehicle):
@@ -537,7 +554,7 @@ class BrandDataLoader:
         'F22': {'missile_count': 4, 'missile_type': 'AIM-120D', 'radar_detection_m': 140000, 'rcs_m2': 0.0001, 'radar_detection_coeff': 1.0}
     }
     @staticmethod
-    def get(brand: str) -> Dict[str, Any]: return BrandDataLoader.BRAND_DATA.get(brand, {})
+    def get(brand: str) -> Dict[str, Any]: return BrandDataLoader.BRAND_DATA.get(brand, {}).copy()
 
 FLIGHTS = [
     {'type': 'F35', 'callsign': 'BO1',    'airport': 'KIAH', 'team': 'WEST', 'pilot_name': 'Maj. Bo',                                 **BrandDataLoader.get('F35')},
